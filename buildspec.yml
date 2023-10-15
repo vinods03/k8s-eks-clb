@@ -1,0 +1,72 @@
+version: 0.2
+env:
+    variables:
+        ECR_REPO_NAME: diamond-price-app-repo  
+        EKS_KUBECTL_ROLE_ARN: arn:aws:iam::100163808729:role/EksCodeBuildKubectlRole
+        EKS_CLUSTER_NAME: eksdemo1
+    parameter-store:
+        AWS_ACCOUNT_ID: /ml-apps/account_id          
+
+phases:
+    install:
+        runtime-versions: 
+            python: 3.10
+    pre_build:
+        commands:
+            - echo "Logging into AWS ECR"
+            - ECR_MAIN_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+            - echo "The ECR_MAIN_URI is ${ECR_MAIN_URI}"
+            - aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_MAIN_URI}
+            - echo "Logged into AWS ECR"
+            - echo "Set the image tag and full image uri variables for later use"
+            - IMAGE_TAG=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+            - ECR_IMAGE_URI="${ECR_MAIN_URI}/${ECR_REPO_NAME}:${IMAGE_TAG}"
+            - echo "The IMAGE_TAG is ${IMAGE_TAG}"
+            - echo "The ECR_IMAGE_URI is ${ECR_IMAGE_URI}"
+            - sed -i 's@CONTAINER_IMAGE@'"$ECR_IMAGE_URI"'@' 1-trial-deployment-definition-without-init-db.yml
+    build:
+        commands:
+            - echo "docker build started"
+            - docker build -t diamond-price-predictor-app:$IMAGE_TAG .
+            - echo "docker build completed"
+    post_build:
+        commands:
+            - echo "push the docker image to ECR - started"
+            - docker tag diamond-price-predictor-app:$IMAGE_TAG ${ECR_IMAGE_URI}
+            - docker push ${ECR_IMAGE_URI}
+            - echo "push the docker image to ECR - completed"
+            
+            # Extracting AWS Credential Information using STS Assume Role for kubectl
+            - echo "Setting Environment Variables related to AWS CLI for Kube Config Setup"          
+            - CREDENTIALS=$(aws sts assume-role --role-arn $EKS_KUBECTL_ROLE_ARN --role-session-name codebuild-kubectl --duration-seconds 1800)
+            - export AWS_ACCESS_KEY_ID="$(echo ${CREDENTIALS} | jq -r '.Credentials.AccessKeyId')"
+            - export AWS_SECRET_ACCESS_KEY="$(echo ${CREDENTIALS} | jq -r '.Credentials.SecretAccessKey')"
+            - export AWS_SESSION_TOKEN="$(echo ${CREDENTIALS} | jq -r '.Credentials.SessionToken')"
+            - export AWS_EXPIRATION=$(echo ${CREDENTIALS} | jq -r '.Credentials.Expiration')
+            
+            # Additional Commands to view your credentials      
+            - echo "Credentials Value is..  ${CREDENTIALS}"      
+            - echo "AWS_ACCESS_KEY_ID...  ${AWS_ACCESS_KEY_ID}"            
+            - echo "AWS_SECRET_ACCESS_KEY...  ${AWS_SECRET_ACCESS_KEY}"            
+            - echo "AWS_SESSION_TOKEN...  ${AWS_SESSION_TOKEN}"            
+            - echo "AWS_EXPIRATION...  $AWS_EXPIRATION"             
+            - echo "EKS_CLUSTER_NAME...  $EKS_CLUSTER_NAME"        
+      
+            # Setup kubectl with our EKS Cluster              
+            - echo "Update Kube Config"      
+            - aws eks update-kubeconfig --name $EKS_CLUSTER_NAME
+            
+            # Apply changes to our Application using kubectl
+            - echo "Apply kube manifests"            
+            - kubectl apply -f 0-ns-and-limits.yml
+            - kubectl apply -f 1-trial-deployment-definition-without-init-db.yml
+            - kubectl apply -f 2-service-definition-for-deployment.yml
+            - echo "Completed applying kube-manifests"      
+            
+            # Create Artifacts which we can use if we want to continue our pipeline for other stages
+            - printf '[{"name":"diamond-price-app-repo","imageUri":"%s"}]' $ECR_IMAGE_URI > imagedefinitions.json
+            
+artifacts:             
+    files:
+        - '**/*'
+   

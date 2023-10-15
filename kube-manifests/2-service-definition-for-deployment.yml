@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: diamond-price-predictor-service
+  namespace: dev
+spec:
+  type: LoadBalancer # default CLB
+  selector:
+    app: diamond-price-predictor-app
+  ports: 
+    - port: 80
+      targetPort: 5000
+     

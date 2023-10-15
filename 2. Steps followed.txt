@@ -1,0 +1,497 @@
+As part of CICD, we will be building an image for the diamond price predictor app (using pkl file, py file and Dockerfile), pushing it into ECR and use this image in the kube deployment.yml that will be applied on the EKS cluster.
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ local docker image / container testing ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+1. Copied contents from C:\Vinod\AWSSagemaker\Deployment\2. CICD\1. ECS 
+to 
+C:\Vinod\AWSSagemaker\Deployment\5. EKS_again\NEW - What was not there in 3 EKS\kube-manifests-with-ns-and-limits-and-lb-cicd\app-related
+
+Make sure you make the required changes in the pkl file (copy the right pkl file for your diamnd price predictor app), handler.py and Dockerfile
+
+buildspec.yml is also changed for EKS deployments, but that is not needed initially, for the local testing.
+
+2. We will see if we are able to run our app locally on an Amazon Linux EC2 instance:
+
+The RDS DB / table creation in private subnet is handled in the next section: CICD block, but here, for the local testing it might be useful to have a RDS DB / table in public subnet and publicly accessible (through MySQL workbench). Associate the DB with mysql_sg security group that allows MySQL traffic on port 3306 from anywhere.
+
+Connect through MySQL workbench and execute below:
+
+create database ml_db;
+
+use ml_db;
+
+create table diamond_price_app
+(
+ run_id int,
+ carat decimal(13,6),
+ cut varchar(20),
+ color varchar(20),
+ clarity varchar(20),
+ depth decimal(13,6),
+ tbl decimal(13,6),
+ x decimal(13,6),
+ y decimal(13,6),
+ z decimal(13,6),
+ diamond_price decimal(13,6)
+);
+
+Provision an Amazon Linux EC2 instance.
+
+aws s3 cp s3://vinod-ml-sagemaker-bucket/diamond_price/for-cicd/handler_diamond_price.py .
+
+aws s3 cp s3://vinod-ml-sagemaker-bucket/diamond_price/for-cicd/diamond_price_dt_model.pkl .
+
+sudo yum -y update
+
+sudo yum install -y python3-pip
+
+sudo pip3 install scikit-learn==0.24.0
+
+sudo pip3 install pymysql
+
+sudo pip3 install flask
+
+sudo pip3 boto3
+
+python3 handler_diamond_price.py
+
+Verification:
+
+Open another EC2 connection to the same machine:
+
+python3 (Go to python prompt and then execute below code)
+
+import requests
+
+url = 'http://0.0.0.0:5000/diamond_price_predict'
+
+r = requests.post(url, json = {
+    "carat": 0.31,
+    "cut": "Good",
+    "color": "J",
+    "clarity": "SI2",
+    "depth": 63.3,
+    "table": 58.0,
+    "x": 4.34,
+    "y": 4.35,
+    "z": 2.75
+})
+
+print(r.text)
+
+--
+
+import requests
+
+url = 'http://0.0.0.0:5000/health_check'
+
+r = requests.get(url)
+
+print(r)
+
+print(r.text)
+
+After the verification succeeds and your are sure, your code is good, proceed to next step.
+
+3. We will now see if we are able to run our app inside a Amazon Linux EC2 container that is created inside a Amazon Linux EC2 instance:
+
+Provision an Amazon Linux EC2 instance if you have terminated the above instance:
+
+aws s3 cp s3://vinod-ml-sagemaker-bucket/diamond_price/for-cicd/handler_diamond_price.py .
+
+aws s3 cp s3://vinod-ml-sagemaker-bucket/diamond_price/for-cicd/diamond_price_dt_model.pkl .
+
+sudo yum install docker
+
+sudo systemctl start docker
+
+sudo docker images
+
+sudo docker ps -a
+
+sudo docker pull public.ecr.aws/amazonlinux/amazonlinux:latest
+
+sudo docker run -it public.ecr.aws/amazonlinux/amazonlinux /bin/bash
+
+Now you are inside a AmazonLinux container.
+
+Go back to a new EC2 instance connection, outside the container:
+
+sudo docker images
+
+sudo docker ps -a
+
+sudo docker inspect 9625f5156d19 (9625f5156d19 is the container id. Note down the IP address of the container - 172.17.0.2 in my case)
+
+sudo docker cp diamond_price_dt_model.pkl 9625f5156d19:diamond_price_dt_model.pkl
+
+sudo docker cp handler_diamond_price.py 9625f5156d19:handler_diamond_price.py
+
+-----
+
+ls -ltr (check if the files are present in the container)
+
+Go to the AmazonLinux container connection:
+
+yum -y update
+
+yum install -y python3-pip
+
+pip3 install scikit-learn==0.24.0
+
+pip3 install pymysql
+
+pip3 install flask
+
+pip3 install boto3
+
+python3 handler_diamond_price.py
+
+-----
+
+Go back to the EC2 connection outside the container:
+
+python3 (Go to python prompt and then execute below code)
+
+import requests
+
+url = 'http://172.17.0.2:5000/diamond_price_predict'
+
+r = requests.post(url, json = {
+    "carat": 0.31,
+    "cut": "Good",
+    "color": "J",
+    "clarity": "SI2",
+    "depth": 63.3,
+    "table": 58.0,
+    "x": 4.34,
+    "y": 4.35,
+    "z": 2.75
+})
+
+print(r.text)
+
+--
+
+import requests
+
+url = 'http://172.17.0.2:5000/health_check'
+
+r = requests.get(url)
+
+print(r)
+
+print(r.text)
+
+So, summarizing, on a Amazon Linux instance, you pulled a Amazon Linux image and ran an Amazon Linux container.
+On the base Amazon Linux container, you installed some software needed by your app (like python3-pip, sklearn, pymysql, flask) and copied some files (py file and pkl file).
+Then you executed the py file i.e. you have started your app inside an Amazon Linux container.
+Then, verified the app from outside the container.
+
+4.  We saw if we are able to run our app inside a Amazon Linux EC2 container that is created inside a Amazon Linux EC2 instance. 
+Now, we will see if we are able to run our app itself as a container:
+
+You will now create Dockerfile based on the above steps. 
+Then run the below commands in the EC2 connection outside the container:
+
+aws s3 cp s3://vinod-ml-sagemaker-bucket/diamond_price/for-cicd/Dockerfile .
+py file and pkl file must already be available in the same folder.
+
+sudo docker build -t diamond_price_predictor_app . (build image)
+
+Now, if you run the command sudo docker images, apart from the base ubuntu image which we built and executed sometime ago, the diamond_price_predictor_app will also be listed.
+
+sudo docker run diamond_price_predictor_app (run container)
+
+sudo docker ps -a
+
+sudo docker inspect f725a077ee4c (Note down the IP Address -> 172.17.0.3)
+
+python3 (Go to python prompt and then execute below code)
+
+import requests
+
+url = 'http://172.17.0.3:5000/diamond_price_predict'
+
+r = requests.post(url, json = {
+    "carat": 0.31,
+    "cut": "Good",
+    "color": "J",
+    "clarity": "SI2",
+    "depth": 63.3,
+    "table": 58.0,
+    "x": 4.34,
+    "y": 4.35,
+    "z": 2.75
+})
+
+print(r.text)
+
+--
+
+import requests
+
+url = 'http://172.17.0.3:5000/health_check'
+
+r = requests.get(url)
+
+print(r)
+
+print(r.text)
+
+At this point, if the above verification works, you have successfully built your app as a docker image, executed it as a container and you are able to access the app.
+Your local testing of the image ends here.
+You can now push your image to a repo and provide users access to this repo or you can use the repo to build publicly available service.
+
+5. Now you can make your image publicly available:
+
+Next step is to push this image to the docker hub / ECR.
+
+sudo docker login (provide username and password)
+
+sudo docker tag diamond_price_predictor_app vinods03/diamond_price_predictor_app:v3 (Note if you dont use the tag v2, it will be tagged as LATEST)
+
+sudo docker push vinods03/diamond_price_predictor_app:v3 -> this is where the push to docker hub happens.
+
+In hub.docker.com -> search for vinods03/diamond_price_predictor_app and you should find it there.
+
+At this point, our app has been converted into a docker image and this image is publicly available in docker hub.
+
+In the buildspec.yml below, we will use ECR instead of docker hub for storing our image.
+
+kube manifests will access the publicly available image, create pods, expose as a service and make our image publicly usable.
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ CICD block ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+Now that the docker build was successful locally, i uploaded the Dockerfile and related py file / pkl file into a new Code Commit repo called "vinod-eks-repository", main branch.
+
+I then created a new CodeBuild project "for-eks-diamond-price-predictor-build-project", with source being above repo / branch.
+Used Ubuntu OS, Standard Runtime, standard:6.0 Image, used "Privileged" option as we need to build docker image, created a new service role "codebuild-for-eks-diamond-price-role", using the default buildspec.yml (so no need to give buildspec name), for Artifacts i chose S3 output vinod-ml-sagemaker-bucket/codebuild-output and enabled Cloudwatch logs with the same name as the CodeBuild project - for-eks-diamond-price-predictor-build-project.
+
+The codebuild initially failed with role related error - Unable to access SSM.
+So i attached the "AmazonSSMFullAccess" policy to "codebuild-for-eks-diamond-price-role".
+
+Next codebuild failure was due to:
+YAML_FILE_ERROR: Unknown runtime version named '3.11' of python. This build image has the following versions: 3.10
+I changed the runtime python version in buildpsec to 3.10 from 3.11.
+
+Got the error: Error while executing command: aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_MAIN_URI}.
+I searched for ECR in IAM role "codebuild-for-eks-diamond-price-role" -> Add Permissions and added the permission "EC2InstanceProfileForImageBuilderECRContainerBuilds" that had ecr:GetAuthorizationToken etc.
+
+Now the build was successful.
+In ECR -> diamond-price-app-repo -> i could see a new image tag added.
+
+Now, time to enhance the buildpsec.yml to apply kube-manifests (if not done already).
+To ensure your code build project deploys the image you are currently building, 2 important changes need to be done:
+1. In deployment.yml, the container image is a variable called CONTAINER_IMAGE
+2. In pre_build section of the buildspec.yml, we derive the value of CONTAINER_IMAGE
+Upload all the changes into the Code Commit repo.
+
+Before running the Code Build project with the updated buildspec.yml, make sure EKS cluster is created using below steps, using the Amazon Linux EC2 instance "my-machine":
+
+# Install kubectl
+
+curl -O https://s3.us-west-2.amazonaws.com/amazon-eks/1.27.1/2023-04-19/bin/linux/amd64/kubectl
+chmod +x ./kubectl
+mkdir -p $HOME/bin && cp ./kubectl $HOME/bin/kubectl && export PATH=$HOME/bin:$PATH
+kubectl version --short --client (for verification)
+
+# Install eksctl
+
+ARCH=amd64
+PLATFORM=$(uname -s)_$ARCH
+curl -sLO "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$PLATFORM.tar.gz"
+tar -xzf eksctl_$PLATFORM.tar.gz -C /tmp && rm eksctl_$PLATFORM.tar.gz
+sudo mv /tmp/eksctl /usr/local/bin 
+eksctl version (for verification)
+
+# In AWS console, VPC -> remove any previous EKS cluster VPC that might not have been deleted properly
+
+# create cluster
+
+eksctl create cluster --name=eksdemo1 \
+                      --region=us-east-1 \
+                      --zones=us-east-1a,us-east-1b \
+                      --without-nodegroup 
+
+
+# Create Private Node Group   
+
+eksctl create nodegroup --cluster=eksdemo1 \
+                       --region=us-east-1 \
+                       --name=eksdemo1-ng-private1 \
+                       --node-type=t3.medium \
+                       --nodes=2 \
+                       --nodes-min=2 \
+                       --nodes-max=4 \
+                       --node-volume-size=20 \
+                       --ssh-access \
+                       --ssh-public-key=MyNewAWSKeyPair \
+                       --managed \
+                       --asg-access \
+                       --external-dns-access \
+                       --full-ecr-access \
+                       --appmesh-access \
+                       --alb-ingress-access \
+                       --node-private-networking
+
+# Kube config map update
+
+If steps 1, 2 and 3 in "1. Prerequisities.txt" are done, perform Step 4 of Prerequisites now.
+
+# Create RDS DB in private subnets
+
+If, for local testing, you had created a RDS DB in public subnets, drop the DB. NOw, we need the DB in private subnets.
+
+Pre-requisite-1: Create DB Security Group:
+
+Create security group to allow access for RDS Database on port 3306 in the VPC in which the EKS cluster is created.
+
+Security group name: eks_rds_db_sg
+Description: Allow access for RDS Database on Port 3306
+VPC: eksctl-eksdemo1-cluster/VPC
+Inbound Rules
+Type: MySQL/Aurora
+Protocol: TPC
+Port: 3306
+Source: Anywhere (0.0.0.0/0)
+
+Note: Anywhere is not needed. The nodes created in the public subnet will have 2 security groups associated with them - one with pattern "remoteAccess" and another without this pattern.
+The security group with pattern "remoteAccess" is for all external world (outside VPC) connection - here you opened port 31231 from anywhere so that app running outside VPC can connect to our app. The other security group (for internal VPC connections) is what actually needs to be used as the Source in eks_rds_db_sg to ensure strictest possible security. Because the RDS is in private subnet, you anyway can't access from outside VPC (through my desktop MySQL workbench for example), but limiting to the particular security group is best practice. I tried and it works !
+
+Description: Allow access for RDS Database on Port 3306
+Outbound Rules
+Leave to defaults
+
+Pre-requisite-2: Create DB Subnet Group in RDS
+
+As said earlier, the eks create cluster command would have created a VPC and 1 Private subnet, 1 public subnet in each of the 2 AZs in which you chose to create the cluster.
+Note down the Private Subnets in the VPC in which your EKS cluster was created.
+Go to RDS -> Subnet Groups
+Click on Create DB Subnet Group
+Name: eks-rds-db-subnetgroup
+Description: EKS RDS DB Subnet Group
+VPC: eksctl-eksdemo1-cluster/VPC
+Availability Zones: us-east-1a, us-east-1b
+Subnets: Select the Private subnets from both your AZs
+Click on Create
+
+Create RDS Database
+In the Connectivity section, make sure you create in the VPC of the EKS cluster and the subnet group (with private subnets) created above
+VPC: eksctl-eksdemo1-cluster/VPC
+Subnet Group: eks-rds-db-subnetgroup
+Publicly accessible: No
+
+From "my-machine" Amazon Linux Ec2 instance, connect to RDS DB and create the table required for your app.
+
+kubectl run mysql-client --image=mysql:8.0 -it --rm --restart=Never -- /bin/bash
+mysql -h database-1.cy9jvehoizhi.us-east-1.rds.amazonaws.com -uadmin -pTest1234
+
+mysql> show schemas;
+mysql> create database ml_db;
+mysql> show schemas;
+mysql> use ml_db;
+mysql> create table diamond_price_app
+(
+ run_id int,
+ carat decimal(13,6),
+ cut varchar(20),
+ color varchar(20),
+ clarity varchar(20),
+ depth decimal(13,6),
+ tbl decimal(13,6),
+ x decimal(13,6),
+ y decimal(13,6),
+ z decimal(13,6),
+ diamond_price decimal(13,6)
+);
+
+# Run the Code Build project with update buildspec.yml that applies kube-manifests now.
+
+# Verification
+
+Connect to the "my-machine" EC2 instance:
+
+kubectl get svc -n dev
+
+Note down the load balancer EXTERNAL-IP and replace below:
+
+python3
+
+import requests
+
+url = 'http://a9be320950d834e2fa0a56a8194ecf1b-1657156244.us-east-1.elb.amazonaws.com:80/diamond_price_predict'
+
+r = requests.post(url, json = {
+    "carat": 0.31,
+    "cut": "Good",
+    "color": "J",
+    "clarity": "SI2",
+    "depth": 63.3,
+    "table": 58.0,
+    "x": 4.34,
+    "y": 4.35,
+    "z": 2.75
+})
+
+print(r.text)
+
+--
+
+import requests
+
+url = 'http://ac9419aae0949451ea2bd34bdb20bb16-1055120922.us-east-1.elb.amazonaws.com:80/health_check'
+
+r = requests.get(url)
+
+print(r)
+
+print(r.text)
+
+You can also run this: kubectl get nodes -o wide
+But because the nodes are in the private subnet, there will not be EXTERNAL-IP and also EXTERNAL-IP is useful only if we are using a Nodeport service.
+Here we are using a LoadBalancer service.
+
+--------
+
+Initially the verification failed. I tried: 
+kubectl get all -n dev
+
+I could see that the pods were not running and were in error status:
+Then i tried kubectl logs diamond-price-predictor-deployment-984ff98f7-l56jj -n dev
+Below was the error:
+
+Traceback (most recent call last):
+  File "//handler_diamond_price.py", line 4, in <module>
+    import pymysql
+ModuleNotFoundError: No module named 'pymysql'
+
+This was an issue with Dockerfile.
+I added "RUN pip3 install pymysql", did a re-build and verification/app worked !!
+
+
+# Code Pipeline
+
+Using the above Code Commit repo & Code Build project, created a Code Pipeline (vinod-ml-app-eks-pipeline) and release the change.
+The Code Build was failing in the docker build phase with below error:
+Error response from daemon: No such image: diamond-price-predictor-app:33533be
+[Container] 2023/10/02 02:31:25 Command did not exit successfully docker tag diamond-price-predictor-app:$IMAGE_TAG ${ECR_IMAGE_URI} exit status 1
+I was getting the same error when i tried Code Build alone as well.
+
+I could see the image in the ECR repo.
+I deleted all the images and then reran the pipeline and everything worked fine.
+
+
+# Cleanup
+
+eksctl delete nodegroup --cluster=eksdemo1 --name=eksdemo1-ng-public1 --region us-east-1
+or
+eksctl delete nodegroup --cluster=eksdemo1 --name=eksdemo1-ng-private1 --region us-east-1
+
+eksctl delete cluster eksdemo1 --region us-east-1
+
+Drop the MySQL database and the EC2 instance also
